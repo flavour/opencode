@@ -148,6 +148,12 @@ The opencode server exposes the following APIs.
 | `POST`   | `/session/:id/unrevert`                  | Restore all reverted messages         | Returns `boolean`                                                                  |
 | `POST`   | `/session/:id/permissions/:permissionID` | Respond to a permission request       | body: `{ response, remember? }`, returns `boolean`                                 |
 
+You can also list sessions from a remote server using the CLI:
+
+```bash
+opencode session list --attach http://localhost:4096 --format json
+```
+
 ---
 
 ### Messages

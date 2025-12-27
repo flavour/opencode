@@ -1,8 +1,8 @@
 import type { Argv } from "yargs"
+import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import { cmd } from "./cmd"
 import { Session } from "../../session"
 import { bootstrap } from "../bootstrap"
-import { UI } from "../ui"
 import { Locale } from "../../util/locale"
 import { EOL } from "os"
 
@@ -29,52 +29,90 @@ export const SessionListCommand = cmd({
         choices: ["table", "json"],
         default: "table",
       })
+      .option("attach", {
+        type: "string",
+        describe: "attach to a running opencode server (e.g., http://localhost:4096)",
+      })
+      .option("server-dir", {
+        type: "string",
+        describe: "directory to run in on the server (absolute path)",
+      })
   },
   handler: async (args) => {
-    await bootstrap(process.cwd(), async () => {
-      const sessions = []
-      for await (const session of Session.list()) {
-        if (!session.parentID) {
-          sessions.push(session)
-        }
-      }
-
-      sessions.sort((a, b) => b.time.updated - a.time.updated)
-
-      const limitedSessions = args.maxCount ? sessions.slice(0, args.maxCount) : sessions
-
-      if (limitedSessions.length === 0) {
-        return
-      }
-
-      let output: string
-      if (args.format === "json") {
-        output = formatSessionJSON(limitedSessions)
-      } else {
-        output = formatSessionTable(limitedSessions)
-      }
-
-      const shouldPaginate = process.stdout.isTTY && !args.maxCount && args.format === "table"
-
-      if (shouldPaginate) {
-        const proc = Bun.spawn({
-          cmd: ["less", "-R", "-S"],
-          stdin: "pipe",
-          stdout: "inherit",
-          stderr: "inherit",
-        })
-
-        proc.stdin.write(output)
-        proc.stdin.end()
-        await proc.exited
-      } else {
-        console.log(output)
-      }
+    const sessions = await listSessions({
+      attach: args.attach,
+      directory: args.serverDir,
     })
+
+    const roots = sessions.filter((s) => !s.parentID).toSorted((a, b) => b.time.updated - a.time.updated)
+
+    const limitedSessions = args.maxCount ? roots.slice(0, args.maxCount) : roots
+
+    if (limitedSessions.length === 0) {
+      return
+    }
+
+    const output = args.format === "json" ? formatSessionJSON(limitedSessions) : formatSessionTable(limitedSessions)
+
+    const shouldPaginate = process.stdout.isTTY && !args.maxCount && args.format === "table"
+
+    if (!shouldPaginate) {
+      console.log(output)
+      return
+    }
+
+    const proc = Bun.spawn({
+      cmd: ["less", "-R", "-S"],
+      stdin: "pipe",
+      stdout: "inherit",
+      stderr: "inherit",
+    })
+
+    proc.stdin.write(output)
+    proc.stdin.end()
+    await proc.exited
   },
 })
 
-function formatSessionTable(sessions: Session.Info[]): string {
+type SessionItem = {
+  id: string
+  title: string
+  parentID?: string
+  projectID: string
+  directory: string
+  time: {
+    created: number
+    updated: number
+    compacting?: number
+    archived?: number
+  }
+}
+
+async function listSessions(input: { attach?: string; directory?: string }) {
+  if (input.attach) {
+    const url = new URL(input.attach)
+    const queryDir = url.searchParams.get("directory") || undefined
+    url.search = ""
+
+    const sdk = createOpencodeClient({
+      baseUrl: url.toString(),
+      directory: input.directory || queryDir,
+    })
+
+    const result = await sdk.session.list()
+    return (result.data ?? []) as SessionItem[]
+  }
+
+  return bootstrap(process.cwd(), async () => {
+    const sessions: SessionItem[] = []
+    for await (const session of Session.list()) {
+      sessions.push(session)
+    }
+    return sessions
+  })
+}
+
+function formatSessionTable(sessions: SessionItem[]): string {
   const lines: string[] = []
 
   const maxIdWidth = Math.max(20, ...sessions.map((s) => s.id.length))
@@ -93,7 +131,7 @@ function formatSessionTable(sessions: Session.Info[]): string {
   return lines.join(EOL)
 }
 
-function formatSessionJSON(sessions: Session.Info[]): string {
+function formatSessionJSON(sessions: SessionItem[]): string {
   const jsonData = sessions.map((session) => ({
     id: session.id,
     title: session.title,
